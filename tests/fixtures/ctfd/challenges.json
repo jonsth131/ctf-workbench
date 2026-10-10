@@ -1,0 +1,26 @@
+{
+  "challenges": [
+    {
+      "id": 41,
+      "name": "Welcome",
+      "category": "misc",
+      "value": 50,
+      "description": "Read the rules.",
+      "files": ["/files/welcome.txt"]
+    },
+    {
+      "name": "Name-only",
+      "category": null,
+      "value": null,
+      "description": "",
+      "files": []
+    },
+    {
+      "id": "43",
+      "name": "Another",
+      "category": "web",
+      "value": 100,
+      "description": "Inspect the page."
+    }
+  ]
+}
