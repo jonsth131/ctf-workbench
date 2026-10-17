@@ -9,6 +9,18 @@ from textual.widgets import Input, ListView, Static, TextArea
 from ctfwb import CTF, Challenge, CTFWorkbenchApp
 
 
+def _has_colored_text(rendered, text: str, color: str) -> bool:
+    expected_color = Color.parse(color)
+    return any(
+        text in rendered.plain[span.start : span.end]
+        and (
+            span.style == color
+            or getattr(span.style, "foreground", None) == expected_color
+        )
+        for span in rendered.spans
+    )
+
+
 def test_add_challenge_manually_and_display_details() -> None:
     async def exercise() -> None:
         app = CTFWorkbenchApp([CTF("Spring CTF")])
@@ -28,14 +40,25 @@ def test_add_challenge_manually_and_display_details() -> None:
             challenge_list = app.screen.query_one("#challenge-list", ListView)
             assert len(challenge_list.children) == 1
             assert challenge_list.index == 0
-            details = str(
-                app.screen.query_one("#challenge-details-content", Static).render()
-            )
+            rendered_details = app.screen.query_one(
+                "#challenge-details-content", Static
+            ).render()
+            details = str(rendered_details)
             assert "Web Warmup" in details
+            assert _has_colored_text(rendered_details, "Web Warmup", "#71d6bc")
             assert "Category: web" in details
+            assert _has_colored_text(rendered_details, "Category: ", "#d7e4df")
             assert "Points: 100" in details
+            assert _has_colored_text(rendered_details, "Points: ", "#d7e4df")
+            assert "Status: UNSOLVED" in details
+            assert _has_colored_text(rendered_details, "Status: ", "#d7e4df")
+            assert _has_colored_text(rendered_details, "UNSOLVED", "#9cb8b2")
             assert "Inspect the page." in details
+            assert "Flag: —\n\nInspect the page." in details
+            assert _has_colored_text(rendered_details, "Flag: ", "#d7e4df")
+            assert _has_colored_text(rendered_details, "Inspect the page.", "#7dcfff")
             assert "\nNOTES\n  None" in details
+            assert not _has_colored_text(rendered_details, "  None", "#e7c66a")
             assert "[Web Warmup] Challenge added." in str(
                 app.screen.query_one("#log-message", Static).render()
             )
@@ -119,11 +142,15 @@ def test_challenge_panels_switch_focus_and_support_line_and_page_scrolling() -> 
             assert challenge_panel.has_focus_within
             assert challenge_panel.styles.border_top[1] == Color(86, 169, 163)
             assert not details_panel.has_focus_within
-            await pilot.press("tab")
+            await pilot.press("l")
             assert details.has_focus
             assert not challenge_panel.has_focus_within
             assert details_panel.has_focus_within
             assert details_panel.styles.border_top[1] == Color(86, 169, 163)
+            await pilot.press("tab")
+            assert challenge_list.has_focus
+            await pilot.press("tab")
+            assert details.has_focus
 
             await pilot.press("j")
             await pilot.pause()
@@ -151,17 +178,20 @@ def test_challenge_panels_switch_focus_and_support_line_and_page_scrolling() -> 
             await pilot.pause()
             assert details.scroll_y < line_offset
 
-            await pilot.press("tab")
+            await pilot.press("h")
             assert challenge_list.has_focus
             await pilot.press("down")
             assert challenge_list.index == 1
             await pilot.press("ctrl+d")
             await pilot.pause()
-            assert challenge_list.scroll_y > 0
-            page_down_offset = challenge_list.scroll_y
+            assert challenge_list.index == 16
             await pilot.press("ctrl+u")
-            await pilot.pause()
-            assert challenge_list.scroll_y < page_down_offset
+            assert challenge_list.index == 1
+            assert all(
+                not binding.show
+                for binding in screen.BINDINGS
+                if binding.key in {"ctrl+d", "ctrl+u"}
+            )
 
     asyncio.run(exercise())
 
@@ -212,5 +242,62 @@ def test_challenge_details_use_the_full_scroll_viewport_width() -> None:
             content = app.screen.query_one("#challenge-details-content", Static)
 
             assert content.size.width == details.size.width
+
+    asyncio.run(exercise())
+
+
+def test_challenge_filter_matches_name_and_category_case_insensitively() -> None:
+    async def exercise() -> None:
+        app = CTFWorkbenchApp([CTF("Spring CTF")])
+        app._challenges[0] = [
+            Challenge("Root Me", category="WeB"),
+            Challenge("Web Riddle", category="misc"),
+            Challenge("Crypto", category="crypto"),
+        ]
+        async with app.run_test() as pilot:
+            await pilot.press("enter")
+            screen = app.screen
+            challenge_list = screen.query_one("#challenge-list", ListView)
+            assert len(challenge_list.children) == 3
+            assert any(
+                binding.key == "/" and binding.description == "Filter"
+                for binding in screen.BINDINGS
+            )
+
+            await pilot.press("/")
+            await pilot.pause()
+            query = screen.query_one("#challenge-filter-query", Input)
+            assert query.has_focus
+            assert "FILTER:" in str(
+                screen.query_one("#challenge-filter-label", Static).render()
+            )
+            query.value = "wEb"
+            await pilot.pause()
+
+            challenge_list = screen.query_one("#challenge-list", ListView)
+            assert len(challenge_list.children) == 2
+            assert "Root Me" in str(
+                screen.query_one("#challenge-details-content", Static).render()
+            )
+            await pilot.press("enter")
+            assert challenge_list.has_focus
+            await pilot.press("down")
+            assert "Web Riddle" in str(
+                screen.query_one("#challenge-details-content", Static).render()
+            )
+            assert len(screen.challenges) == 3
+
+            query.value = "missing"
+            await pilot.pause()
+            assert len(screen.query_one("#challenge-list", ListView).children) == 0
+            assert "No challenges match the filter." in str(
+                screen.query_one("#challenge-details-content", Static).render()
+            )
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert len(screen.query_one("#challenge-list", ListView).children) == 3
+            assert not screen.query_one("#challenge-filter-row").display
+            assert screen.query_one("#challenge-filter-query", Input).value == ""
 
     asyncio.run(exercise())

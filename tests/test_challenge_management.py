@@ -528,7 +528,7 @@ def test_challenge_details_show_artifact_filenames_and_download_status(
                     "#challenge-details-content", Static
                 ).render()
             )
-            assert "Status: in_progress" in rendered
+            assert "Status: IN PROG" in rendered
             assert "payload.zip: downloaded" in rendered
             assert "not-present.bin: not downloaded" in rendered
             assert "[italic]download.zip[/italic]" not in rendered
@@ -789,13 +789,20 @@ def test_challenge_command_bar_grows_when_narrow_and_shrinks_when_wide(
             assert any("Refresh" in label for label in rendered_labels)
             assert any("Delete" in label for label in rendered_labels)
             assert all(key.render().cell_len <= key.size.width for key in footer_keys)
+            assert any(
+                right.region.x > left.region.right
+                for left, right in zip(footer_keys, footer_keys[1:])
+                if left.region.y == right.region.y
+            )
 
             await pilot.resize_terminal(200, 24)
             await pilot.pause()
             assert footer.size.height == 1
-            assert all(
-                key.render().cell_len <= key.size.width
-                for key in footer.query("FooterKey")
+            footer_keys = footer.query("FooterKey")
+            assert all(key.render().cell_len <= key.size.width for key in footer_keys)
+            assert any(
+                right.region.x > left.region.right
+                for left, right in zip(footer_keys, footer_keys[1:])
             )
 
     asyncio.run(exercise())

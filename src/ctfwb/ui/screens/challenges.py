@@ -9,6 +9,7 @@ from math import ceil
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -18,6 +19,7 @@ from textual.screen import Screen
 from textual.widgets import (
     Footer,
     Header,
+    Input,
     Label,
     ListItem,
     ListView,
@@ -127,7 +129,7 @@ class ResponsiveChallengeFooter(Footer):
             for index, width in enumerate(command_widths):
                 column = index % candidate_columns
                 column_widths[column] = max(column_widths[column], width)
-            required_width = sum(column_widths) + candidate_columns - 1
+            required_width = sum(column_widths)
             if required_width <= available_width:
                 row_count = candidate_rows
                 column_count = candidate_columns
@@ -157,7 +159,10 @@ class CTFChallengeScreen(Screen[None]):
         Binding("g", "run_solver", "Run"),
         Binding("c", "cancel_solver", "Cancel Solver"),
         Binding("b", "export_backup", "Backup"),
+        Binding("/", "filter_challenges", "Filter"),
         Binding("tab", "toggle_panel", "Switch"),
+        Binding("h", "focus_challenge_list", show=False),
+        Binding("l", "focus_challenge_details", show=False),
         Binding("ctrl+d", "challenge_page_down", "Page Down", show=False),
         Binding("ctrl+u", "challenge_page_up", "Page Up", show=False),
         Binding("up", "challenge_up", "Prev"),
@@ -178,6 +183,10 @@ class CTFChallengeScreen(Screen[None]):
         "solved": "#71d6bc",
         "skipped": "#82919a",
     }
+    DESCRIPTION_COLOR = "#7dcfff"
+    NOTE_COLOR = "#e7c66a"
+    CHALLENGE_NAME_COLOR = "#71d6bc"
+    DETAIL_LABEL_COLOR = "#d7e4df"
 
     CSS = """
     CTFChallengeScreen {
@@ -247,6 +256,25 @@ class CTFChallengeScreen(Screen[None]):
     #challenge-list, #challenge-details {
         height: 1fr;
         color: #9cb8b2;
+    }
+
+    #challenge-filter-row {
+        height: 1;
+        display: none;
+    }
+
+    #challenge-filter-label {
+        color: #e7c66a;
+        width: auto;
+        height: 1;
+    }
+
+    #challenge-filter-query {
+        width: 1fr;
+        height: 1;
+        border: none;
+        background: transparent;
+        padding: 0 1;
     }
 
     #challenge-details {
@@ -327,6 +355,8 @@ class CTFChallengeScreen(Screen[None]):
         self.ctf = ctf
         self._log_message = log_message
         self.challenges = challenges
+        self._filter_query = ""
+        self._filter_active = False
         self._solver_cancel_event: threading.Event | None = None
         self._artifact_download_active = False
 
@@ -340,6 +370,9 @@ class CTFChallengeScreen(Screen[None]):
         with Horizontal(id="challenge-workspace"):
             with Vertical(id="challenge-panel"):
                 yield Label("CHALLENGES", classes="challenge-panel-title")
+                with Horizontal(id="challenge-filter-row"):
+                    yield Static("FILTER:", id="challenge-filter-label", markup=False)
+                    yield Input(disabled=True, id="challenge-filter-query")
                 if self.challenges:
                     yield self.make_challenge_list()
                 else:
@@ -385,7 +418,10 @@ class CTFChallengeScreen(Screen[None]):
                 return False
             if selected is None:
                 return False
-            challenge = self.challenges[selected]
+            challenge_index = self._challenge_index_at(selected)
+            if challenge_index is None:
+                return False
+            challenge = self.challenges[challenge_index]
             if challenge.id is None:
                 return False
             if action == "edit_solver":
@@ -410,10 +446,13 @@ class CTFChallengeScreen(Screen[None]):
             except NoMatches:
                 return False
             index = challenge_list.index
+            challenge_index = (
+                self._challenge_index_at(index) if index is not None else None
+            )
             return (
-                index is not None
-                and self.challenges[index].source == "ctfd"
-                and self.challenges[index].remote_id is not None
+                challenge_index is not None
+                and self.challenges[challenge_index].source == "ctfd"
+                and self.challenges[challenge_index].remote_id is not None
             )
         if action == "open_artifacts_directory":
             if (
@@ -427,7 +466,13 @@ class CTFChallengeScreen(Screen[None]):
             except NoMatches:
                 return False
             index = challenge_list.index
-            return index is not None and self.challenges[index].id is not None
+            challenge_index = (
+                self._challenge_index_at(index) if index is not None else None
+            )
+            return (
+                challenge_index is not None
+                and self.challenges[challenge_index].id is not None
+            )
         if action == "refresh_ctfd_challenges":
             return any(
                 challenge.source in {"ctfd", "json_import"}
@@ -704,11 +749,61 @@ class CTFChallengeScreen(Screen[None]):
     def make_challenge_list(self) -> ListView:
         return ListView(
             *(
-                self.make_challenge_list_item(challenge)
-                for challenge in self.challenges
+                self.make_challenge_list_item(self.challenges[index])
+                for index in self._visible_challenge_indices()
             ),
             id="challenge-list",
         )
+
+    def _visible_challenge_indices(self) -> list[int]:
+        query = self._filter_query.casefold()
+        return [
+            index
+            for index, challenge in enumerate(self.challenges)
+            if not query
+            or query in challenge.name.casefold()
+            or query in (challenge.category or "").casefold()
+        ]
+
+    def _challenge_index_at(self, list_index: int) -> int | None:
+        visible_indices = self._visible_challenge_indices()
+        if 0 <= list_index < len(visible_indices):
+            return visible_indices[list_index]
+        return None
+
+    def _list_index_for_challenge(self, challenge_index: int) -> int | None:
+        try:
+            return self._visible_challenge_indices().index(challenge_index)
+        except ValueError:
+            return None
+
+    def action_filter_challenges(self) -> None:
+        self._filter_active = True
+        self.query_one("#challenge-filter-row", Horizontal).styles.display = "block"
+        query = self.query_one("#challenge-filter-query", Input)
+        query.disabled = False
+        query.value = self._filter_query
+        query.focus()
+
+    @on(Input.Changed, "#challenge-filter-query")
+    async def filter_challenges(self, event: Input.Changed) -> None:
+        if not self._filter_active:
+            return
+        selected_index: int | None = None
+        if self.challenges:
+            challenge_list = self.query_one("#challenge-list", ListView)
+            if challenge_list.index is not None:
+                selected_index = self._challenge_index_at(challenge_list.index)
+        self._filter_query = event.value
+        await self._refresh_challenge_list(
+            selected_index if selected_index is not None else 0
+        )
+
+    @on(Input.Submitted, "#challenge-filter-query")
+    def focus_filtered_challenges(self) -> None:
+        if not self._visible_challenge_indices():
+            return
+        self.query_one("#challenge-list", ListView).focus()
 
     def make_challenge_list_item(self, challenge: Challenge) -> ListItem:
         status_label = self.STATUS_LABELS.get(challenge.status, "UNKNOWN")
@@ -733,7 +828,10 @@ class CTFChallengeScreen(Screen[None]):
         )
 
     def update_challenge_list_item(self, index: int, challenge: Challenge) -> None:
-        item = self.query_one("#challenge-list", ListView).children[index]
+        list_index = self._list_index_for_challenge(index)
+        if list_index is None:
+            return
+        item = self.query_one("#challenge-list", ListView).children[list_index]
         item.query_one(".challenge-name", Static).update(challenge.name)
         status_indicator = item.query_one(".challenge-status-indicator", Static)
         status_indicator.update(self.STATUS_LABELS.get(challenge.status, "UNKNOWN"))
@@ -858,20 +956,8 @@ class CTFChallengeScreen(Screen[None]):
                 self.app._storage_failure(error)
                 return
 
-        had_challenges = bool(self.challenges)
         self.challenges.extend(imported_challenges)
-        challenge_panel = self.query_one("#challenge-panel", Vertical)
-        if not had_challenges:
-            await self.query_one("#challenge-list", Static).remove()
-            await challenge_panel.mount(self.make_challenge_list())
-        else:
-            challenge_list = self.query_one("#challenge-list", ListView)
-            for challenge in imported_challenges:
-                await challenge_list.append(self.make_challenge_list_item(challenge))
-        challenge_list = self.query_one("#challenge-list", ListView)
-        challenge_list.index = len(self.challenges) - 1
-        challenge_list.focus()
-        self.render_challenge_details(challenge_list.index)
+        await self._refresh_challenge_list(len(self.challenges) - 1)
         self.refresh_bindings()
         self.app.log_message(
             f"Imported {len(imported_challenges)} challenge(s) into {self.ctf.name}."
@@ -1331,28 +1417,16 @@ class CTFChallengeScreen(Screen[None]):
             return
         self.challenges.append(challenge)
         self.app.log_message(f"[{challenge.name}] Challenge added.")
-
-        if len(self.challenges) == 1:
-            await self.query_one("#challenge-list", Static).remove()
-            await self.query_one("#challenge-panel", Vertical).mount(
-                self.make_challenge_list()
-            )
-        else:
-            await self.query_one("#challenge-list", ListView).append(
-                self.make_challenge_list_item(challenge)
-            )
-
-        challenge_list = self.query_one("#challenge-list", ListView)
-        challenge_list.index = len(self.challenges) - 1
-        challenge_list.focus()
-        self.render_challenge_details(challenge_list.index)
+        await self._refresh_challenge_list(len(self.challenges) - 1)
 
     @on(ListView.Highlighted, "#challenge-list")
     def show_challenge_details(self, event: ListView.Highlighted) -> None:
         self.refresh_bindings()
         index = event.list_view.index
         if index is not None:
-            self.render_challenge_details(index)
+            challenge_index = self._challenge_index_at(index)
+            if challenge_index is not None:
+                self.render_challenge_details(challenge_index)
 
     def render_challenge_details(self, index: int) -> None:
         challenge = self.challenges[index]
@@ -1363,26 +1437,36 @@ class CTFChallengeScreen(Screen[None]):
                 notes = data_store.read_challenge_notes(self.ctf.id, challenge.id)
             except DataStoreError as error:
                 notes = f"Cannot load notes: {error}"
-        details = [
-            challenge.name,
-            "",
-            f"Category: {challenge.category or '—'}",
-            f"Points: {challenge.points if challenge.points is not None else '—'}",
-            f"Status: {challenge.status}",
-            f"Flag: {challenge.flag or '—'}",
-            "",
+        details_text = Text(challenge.name, style=self.CHALLENGE_NAME_COLOR)
+        details_text.append("\n\nCategory: ", style=self.DETAIL_LABEL_COLOR)
+        details_text.append(f"{challenge.category or '—'}\n")
+        details_text.append("Points: ", style=self.DETAIL_LABEL_COLOR)
+        details_text.append(
+            f"{challenge.points if challenge.points is not None else '—'}"
+        )
+        details_text.append("\nStatus: ", style=self.DETAIL_LABEL_COLOR)
+        details_text.append(
+            self.STATUS_LABELS.get(challenge.status, "UNKNOWN"),
+            style=self.STATUS_COLORS.get(challenge.status, "#ffffff"),
+        )
+        details_text.append("\nFlag: ", style=self.DETAIL_LABEL_COLOR)
+        details_text.append(f"{challenge.flag or '—'}\n")
+        details_text.append("\n")
+        details_text.append(
             challenge.description or "No description.",
-            "",
-            "ARTIFACTS",
-            *self._artifact_details(challenge),
-            "",
-            "SOLVER",
-            *self._solver_details(challenge),
-            "",
-            "NOTES",
-            *(notes.splitlines() if notes else ["  None"]),
-        ]
-        self.query_one("#challenge-details-content", Static).update("\n".join(details))
+            style=self.DESCRIPTION_COLOR,
+        )
+        details_text.append(
+            "\n\nARTIFACTS\n" + "\n".join(self._artifact_details(challenge))
+        )
+        details_text.append("\n\nSOLVER\n" + "\n".join(self._solver_details(challenge)))
+        details_text.append("\n\nNOTES\n")
+        if notes:
+            details_text.append("\n")
+            details_text.append("\n".join(notes.splitlines()), style=self.NOTE_COLOR)
+        else:
+            details_text.append("  None")
+        self.query_one("#challenge-details-content", Static).update(details_text)
 
     def _artifact_details(self, challenge: Challenge) -> list[str]:
         if not challenge.artifacts:
@@ -1418,12 +1502,19 @@ class CTFChallengeScreen(Screen[None]):
         if not self.challenges:
             self.app.log_message(f"No challenge selected to {action}.")
             return None
-        challenge_list = self.query_one("#challenge-list", ListView)
+        try:
+            challenge_list = self.query_one("#challenge-list", ListView)
+        except NoMatches:
+            self.app.log_message(f"Select a challenge to {action}.")
+            return None
         index = challenge_list.index
         if index is None:
             self.app.log_message(f"Select a challenge to {action}.")
             return None
-        return index
+        challenge_index = self._challenge_index_at(index)
+        if challenge_index is None:
+            self.app.log_message(f"Select a challenge to {action}.")
+        return challenge_index
 
     def action_edit_challenge(self) -> None:
         index = self._selected_challenge_index("edit")
@@ -1462,11 +1553,7 @@ class CTFChallengeScreen(Screen[None]):
         if saved is None:
             return
         self.challenges[index] = saved
-        challenge_list = self.query_one("#challenge-list", ListView)
-        self.update_challenge_list_item(index, saved)
-        challenge_list.index = index
-        challenge_list.focus()
-        self.render_challenge_details(index)
+        await self._refresh_challenge_list(index)
         self.app.log_message(f"[{saved.name}] Challenge updated.")
 
     async def remove_challenge(self, index: int, confirmed: bool) -> None:
@@ -1506,13 +1593,27 @@ class CTFChallengeScreen(Screen[None]):
     async def _refresh_challenge_list(self, selected_index: int) -> None:
         await self.query_one("#challenge-list").remove()
         panel = self.query_one("#challenge-panel", Vertical)
+        visible_indices = self._visible_challenge_indices()
+        filter_input_focused = self.query_one(
+            "#challenge-filter-query", Input
+        ).has_focus
         if self.challenges:
             await panel.mount(self.make_challenge_list())
             challenge_list = self.query_one("#challenge-list", ListView)
-            selected_index = min(selected_index, len(self.challenges) - 1)
-            challenge_list.index = selected_index
-            challenge_list.focus()
-            self.render_challenge_details(selected_index)
+            list_index = self._list_index_for_challenge(selected_index)
+            if list_index is None and visible_indices:
+                list_index = 0
+            challenge_list.index = list_index
+            if list_index is not None:
+                if not filter_input_focused:
+                    challenge_list.focus()
+                challenge_index = self._challenge_index_at(list_index)
+                if challenge_index is not None:
+                    self.render_challenge_details(challenge_index)
+            else:
+                self.query_one("#challenge-details-content", Static).update(
+                    "No challenges match the filter."
+                )
         else:
             await panel.mount(
                 Static(
@@ -1784,25 +1885,60 @@ class CTFChallengeScreen(Screen[None]):
         else:
             details.focus()
 
+    def action_focus_challenge_list(self) -> None:
+        if self.challenges:
+            self.query_one("#challenge-list", ListView).focus()
+
+    def action_focus_challenge_details(self) -> None:
+        if self.challenges:
+            self.query_one("#challenge-details", VerticalScroll).focus()
+
     def action_challenge_page_down(self) -> None:
         if not self.challenges:
             return
-        if self.query_one("#challenge-details", VerticalScroll).has_focus:
-            self.query_one("#challenge-details", VerticalScroll).scroll_page_down(
-                animate=False
-            )
+        details = self.query_one("#challenge-details", VerticalScroll)
+        if details.has_focus:
+            details.scroll_page_down(animate=False)
         else:
-            self.query_one("#challenge-list", ListView).scroll_page_down(animate=False)
+            visible_count = len(self._visible_challenge_indices())
+            if visible_count == 0:
+                return
+            challenge_list = self.query_one("#challenge-list", ListView)
+            challenge_list.index = min(
+                (challenge_list.index or 0) + 15, visible_count - 1
+            )
 
     def action_challenge_page_up(self) -> None:
         if not self.challenges:
             return
-        if self.query_one("#challenge-details", VerticalScroll).has_focus:
-            self.query_one("#challenge-details", VerticalScroll).scroll_page_up(
-                animate=False
-            )
+        details = self.query_one("#challenge-details", VerticalScroll)
+        if details.has_focus:
+            details.scroll_page_up(animate=False)
         else:
-            self.query_one("#challenge-list", ListView).scroll_page_up(animate=False)
+            if not self._visible_challenge_indices():
+                return
+            challenge_list = self.query_one("#challenge-list", ListView)
+            challenge_list.index = max((challenge_list.index or 0) - 15, 0)
 
-    def action_back(self) -> None:
+    async def action_back(self) -> None:
+        if self._filter_active:
+            selected_index: int | None = None
+            if self.challenges:
+                challenge_list = self.query_one("#challenge-list", ListView)
+                if challenge_list.index is not None:
+                    selected_index = self._challenge_index_at(challenge_list.index)
+            self._filter_active = False
+            self._filter_query = ""
+            query = self.query_one("#challenge-filter-query", Input)
+            query.value = ""
+            query.disabled = True
+            self.query_one("#challenge-filter-row", Horizontal).styles.display = "none"
+            await self._refresh_challenge_list(
+                selected_index if selected_index is not None else 0
+            )
+            if self.challenges:
+                challenge_list = self.query_one("#challenge-list", ListView)
+                if challenge_list.index is not None:
+                    challenge_list.focus()
+            return
         self.app.pop_screen()

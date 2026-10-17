@@ -61,12 +61,12 @@ def open_directory_in_terminal(directory: Path) -> None:
         (
             executable
             for name in (
+                "kitty",
                 "x-terminal-emulator",
                 "gnome-terminal",
                 "konsole",
                 "xfce4-terminal",
                 "xterm",
-                "kitty",
                 "alacritty",
                 "foot",
                 "wezterm",

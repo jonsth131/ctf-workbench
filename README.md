@@ -74,7 +74,10 @@ clears the flag. Adding a new flag marks the challenge solved, while editing or
 clearing an existing flag leaves its status unchanged. Flag values are visible
 when entered and in the challenge details. Challenge action logs include the
 challenge name and flag value when a flag is added or updated. Use the arrow
-keys or `j`/`k` to move through challenges. Press `Tab` to switch between the
+keys or `j`/`k` to move through challenges. Press `/` to filter challenge names
+and categories as you type (case-insensitive); press `Enter` to navigate the
+filtered list. Press `Esc` to clear an active filter, then press it again to
+return to the CTF list. Press `Tab` to switch between the
 challenge list and details; use the arrow keys or `j`/`k` to scroll the focused
 pane, and `Ctrl-D`/`Ctrl-U` to page down/up. Notes from the selected challenge's
 `notes.md` are shown in the details pane. Press `n` to edit that note in the
@@ -251,7 +254,10 @@ helpers do not sandbox it or restrict filesystem or network access. The helper
 functions currently include `read_bytes`, `read_text`, and `sha256_file`; use
 them only as optional conveniences. `exiftool(path)` returns ExifTool's JSON
 metadata for a file and requires the `exiftool` executable on `PATH`; use
-`ctf-workbench doctor` to check registered external tools.
+`STEGHIDE.run(...)` to invoke Steghide with argument-list semantics; it requires
+the `steghide` executable on `PATH`. `ZSTEG.run(...)` and `TSHARK.run(...)`
+provide the same interface for Zsteg and Tshark. `ctf-workbench doctor` checks
+all registered tools.
 
 ## Source layout
 

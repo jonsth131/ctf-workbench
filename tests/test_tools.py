@@ -6,18 +6,45 @@ import pytest
 
 from ctfwb.tools import (
     EXIFTOOL,
+    STEGHIDE,
     TOOL_HELPERS,
+    TSHARK,
+    ZSTEG,
+    ExternalToolHelper,
     exiftool,
     extract_zip_member,
     list_zip_files,
 )
-from ctfwb.tools import external as external_tools
-from ctfwb.tools.external import ExternalToolHelper
+from ctfwb.tools.external import subprocess as exiftool_subprocess
+from ctfwb.tools.network import TSHARK as TSHARK_CATEGORY_HELPER
+from ctfwb.tools.steg import STEGHIDE as STEGHIDE_CATEGORY_HELPER
+from ctfwb.tools.steg import ZSTEG as ZSTEG_CATEGORY_HELPER
 
 
 def test_exiftool_is_registered():
     assert EXIFTOOL in TOOL_HELPERS
     assert EXIFTOOL.name == "exiftool"
+
+
+def test_steghide_is_registered_in_steg_category():
+    assert STEGHIDE is STEGHIDE_CATEGORY_HELPER
+    assert STEGHIDE in TOOL_HELPERS
+    assert STEGHIDE.name == "steghide"
+    assert STEGHIDE.executable == "steghide"
+
+
+def test_zsteg_is_registered_in_steg_category():
+    assert ZSTEG is ZSTEG_CATEGORY_HELPER
+    assert ZSTEG in TOOL_HELPERS
+    assert ZSTEG.name == "zsteg"
+    assert ZSTEG.executable == "zsteg"
+
+
+def test_tshark_is_registered_in_network_category():
+    assert TSHARK is TSHARK_CATEGORY_HELPER
+    assert TSHARK in TOOL_HELPERS
+    assert TSHARK.name == "tshark"
+    assert TSHARK.executable == "tshark"
 
 
 def test_exiftool_parses_metadata_and_passes_path_as_argument(monkeypatch, tmp_path):
@@ -26,14 +53,14 @@ def test_exiftool_parses_metadata_and_passes_path_as_argument(monkeypatch, tmp_p
 
     def run(arguments, **kwargs):
         observed.append((arguments, kwargs))
-        return external_tools.subprocess.CompletedProcess(
+        return exiftool_subprocess.CompletedProcess(
             arguments,
             0,
             stdout=json.dumps([{"FileName": path.name, "ImageWidth": 640}]),
             stderr="",
         )
 
-    monkeypatch.setattr(external_tools.subprocess, "run", run)
+    monkeypatch.setattr(exiftool_subprocess, "run", run)
 
     assert exiftool(path) == {"FileName": path.name, "ImageWidth": 640}
     assert observed == [

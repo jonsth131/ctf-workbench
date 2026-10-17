@@ -4,6 +4,7 @@ import asyncio
 from contextlib import nullcontext
 
 import pytest
+from textual.color import Color
 from textual.widgets import Static
 
 from ctfwb import AppConfig, CTFWorkbenchApp, DataStore, generate_id
@@ -283,11 +284,21 @@ def test_note_binding_opens_selected_challenge_notes_with_configured_editor(
             )
             assert calls == [("editor with spaces", ("--wait", "two words"), expected)]
             assert expected.read_text(encoding="utf-8") == "# Solving notes\n"
-            details = str(
-                app.screen.query_one("#challenge-details-content", Static).render()
-            )
+            rendered_details = app.screen.query_one(
+                "#challenge-details-content", Static
+            ).render()
+            details = str(rendered_details)
             assert "NOTES" in details
+            assert "NOTES\n\n# Solving notes" in details
             assert "# Solving notes" in details
+            assert any(
+                (
+                    span.style == "#e7c66a"
+                    or getattr(span.style, "foreground", None) == Color.parse("#e7c66a")
+                )
+                and "# Solving notes" in rendered_details.plain[span.start : span.end]
+                for span in rendered_details.spans
+            )
             assert "[Web Warmup] Note edited." in str(
                 app.query_one("#log-message", Static).render()
             )
