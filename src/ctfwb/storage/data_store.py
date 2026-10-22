@@ -1156,6 +1156,29 @@ class DataStore:
 
     def read_challenge_notes(self, ctf_id: str, challenge_id: str) -> str:
         """Read a challenge's notes without creating a missing notes file."""
+        return self._read_challenge_notes(
+            ctf_id,
+            challenge_id,
+            validate_challenge=True,
+        )
+
+    def read_challenge_notes_for_loaded_challenge(
+        self, ctf_id: str, challenge_id: str
+    ) -> str:
+        """Read notes for a challenge already present in the caller's loaded list."""
+        return self._read_challenge_notes(
+            ctf_id,
+            challenge_id,
+            validate_challenge=False,
+        )
+
+    def _read_challenge_notes(
+        self,
+        ctf_id: str,
+        challenge_id: str,
+        *,
+        validate_challenge: bool,
+    ) -> str:
         collection_path = self._challenges_path(ctf_id)
         if not isinstance(challenge_id, str) or not _ID_RE.fullmatch(challenge_id):
             raise DataFileError(
@@ -1163,17 +1186,18 @@ class DataStore:
                 "challenge ID is not a valid application-generated ID",
             )
 
-        try:
-            challenges = self.load_challenges(ctf_id)
-        except OSError as exc:
-            detail = exc.strerror or "filesystem operation failed"
-            raise DataFileError(
-                collection_path, f"cannot load challenge collection: {detail}"
-            ) from exc
-        if not any(record["id"] == challenge_id for record in challenges):
-            raise DataValidationError(
-                collection_path, f"challenge ID '{challenge_id}' does not exist"
-            )
+        if validate_challenge:
+            try:
+                challenges = self.load_challenges(ctf_id)
+            except OSError as exc:
+                detail = exc.strerror or "filesystem operation failed"
+                raise DataFileError(
+                    collection_path, f"cannot load challenge collection: {detail}"
+                ) from exc
+            if not any(record["id"] == challenge_id for record in challenges):
+                raise DataValidationError(
+                    collection_path, f"challenge ID '{challenge_id}' does not exist"
+                )
 
         challenge_directory = collection_path.parent / challenge_id
         notes_path = challenge_directory / "notes.md"

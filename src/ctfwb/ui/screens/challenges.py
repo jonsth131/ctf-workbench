@@ -66,6 +66,7 @@ from ctfwb.ui.dialogs import (
     ImportJSONDialog,
     ImportPreviewDialog,
     ImportSourceDialog,
+    LoadingDialog,
     OpenArtifactsDirectoryDialog,
     RefreshSourceDialog,
     SelectChallengeStatusDialog,
@@ -154,6 +155,7 @@ class CTFChallengeScreen(Screen[None]):
         Binding("t", "set_challenge_status", "Status"),
         Binding("f", "edit_flag", "Flag"),
         Binding("n", "note", "Note"),
+        Binding("y", "copy_challenge_details", "Copy details"),
         Binding("s", "create_solver", "Solver"),
         Binding("v", "edit_solver", "Edit Solver"),
         Binding("g", "run_solver", "Run"),
@@ -357,6 +359,8 @@ class CTFChallengeScreen(Screen[None]):
         self.challenges = challenges
         self._filter_query = ""
         self._filter_active = False
+        self._visible_challenge_indices_cache: list[int] | None = None
+        self._rendered_challenge_indices: list[int] = []
         self._solver_cancel_event: threading.Event | None = None
         self._artifact_download_active = False
 
@@ -405,6 +409,15 @@ class CTFChallengeScreen(Screen[None]):
             self.render_challenge_details(0)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "copy_challenge_details":
+            try:
+                challenge_list = self.query_one("#challenge-list")
+            except NoMatches:
+                return False
+            if not isinstance(challenge_list, ListView):
+                return False
+            index = challenge_list.index
+            return index is not None and self._challenge_index_at(index) is not None
         if action in {"create_solver", "edit_solver", "run_solver"}:
             if (
                 not self.challenges
@@ -747,23 +760,50 @@ class CTFChallengeScreen(Screen[None]):
         self.app.log_error(f"[{challenge_name}] Could not {operation}: {detail}.")
 
     def make_challenge_list(self) -> ListView:
+        visible_indices = self._visible_challenge_indices()
+        self._rendered_challenge_indices = visible_indices
         return ListView(
             *(
                 self.make_challenge_list_item(self.challenges[index])
-                for index in self._visible_challenge_indices()
+                for index in visible_indices
             ),
             id="challenge-list",
         )
 
     def _visible_challenge_indices(self) -> list[int]:
+        if self._visible_challenge_indices_cache is not None:
+            return self._visible_challenge_indices_cache
         query = self._filter_query.casefold()
-        return [
+        visible_indices = [
             index
             for index, challenge in enumerate(self.challenges)
             if not query
-            or query in challenge.name.casefold()
-            or query in (challenge.category or "").casefold()
+            or self._matches_challenge_filter(challenge, query)
         ]
+        self._visible_challenge_indices_cache = visible_indices
+        return visible_indices
+
+    def _invalidate_visible_challenge_indices(self) -> None:
+        self._visible_challenge_indices_cache = None
+
+    def _matches_challenge_filter(self, challenge: Challenge, query: str) -> bool:
+        if (
+            query in challenge.name.casefold()
+            or query in (challenge.category or "").casefold()
+        ):
+            return True
+
+        status = challenge.status.casefold()
+        readable_status = status.replace("_", " ")
+        status_label = self.STATUS_LABELS.get(challenge.status, "").casefold()
+        return (
+            query in {status, readable_status, status_label}
+            or any(
+                word.startswith(query)
+                for value in (readable_status, status_label)
+                for word in value.split()
+            )
+        )
 
     def _challenge_index_at(self, list_index: int) -> int | None:
         visible_indices = self._visible_challenge_indices()
@@ -790,11 +830,16 @@ class CTFChallengeScreen(Screen[None]):
         if not self._filter_active:
             return
         selected_index: int | None = None
-        if self.challenges:
+        previous_visible_indices = self._rendered_challenge_indices
+        if self.challenges and self._rendered_challenge_indices:
             challenge_list = self.query_one("#challenge-list", ListView)
-            if challenge_list.index is not None:
-                selected_index = self._challenge_index_at(challenge_list.index)
+            list_index = challenge_list.index
+            if list_index is not None and list_index < len(previous_visible_indices):
+                selected_index = previous_visible_indices[list_index]
         self._filter_query = event.value
+        self._invalidate_visible_challenge_indices()
+        if self._visible_challenge_indices() == previous_visible_indices:
+            return
         await self._refresh_challenge_list(
             selected_index if selected_index is not None else 0
         )
@@ -957,6 +1002,7 @@ class CTFChallengeScreen(Screen[None]):
                 return
 
         self.challenges.extend(imported_challenges)
+        self._invalidate_visible_challenge_indices()
         await self._refresh_challenge_list(len(self.challenges) - 1)
         self.refresh_bindings()
         self.app.log_message(
@@ -1233,7 +1279,7 @@ class CTFChallengeScreen(Screen[None]):
             overwrite=overwrite,
         )
 
-    async def action_refresh_ctfd_challenges(self) -> None:
+    def action_refresh_ctfd_challenges(self) -> None:
         sources = tuple(
             source
             for source in ("ctfd", "json_import")
@@ -1247,10 +1293,7 @@ class CTFChallengeScreen(Screen[None]):
             return
         if not sources:
             return
-        if sources[0] == "json_import":
-            self.begin_json_refresh()
-            return
-        await self.refresh_ctfd_challenges()
+        self.begin_refresh(sources[0])
 
     def begin_refresh(self, source: str | None) -> None:
         if source == "ctfd":
@@ -1305,19 +1348,38 @@ class CTFChallengeScreen(Screen[None]):
                 "No saved CTFd token for this URL. Import from CTFd to configure it."
             )
             return
+        cancel_event = threading.Event()
+        loading_dialog = LoadingDialog(
+            "Fetching the latest challenges from CTFd...",
+            on_cancel=cancel_event.set,
+        )
+        await self.app.push_screen(loading_dialog)
         try:
             imported = await asyncio.to_thread(
                 fetch_ctfd_challenges,
                 self.ctf.platform_url,
                 token,
+                cancel_event=cancel_event,
             )
+            if cancel_event.is_set():
+                raise CTFdError("CTFd refresh cancelled")
             plan = create_refresh_plan(
                 imported,
                 [_challenge_record(challenge) for challenge in self.challenges],
             )
-        except (CTFdError, ImportErrorBase) as error:
+            if cancel_event.is_set():
+                raise CTFdError("CTFd refresh cancelled")
+        except CTFdError as error:
+            if cancel_event.is_set():
+                self.app.log_message("CTFd refresh cancelled; no challenges changed.")
+            else:
+                self.app.log_error(f"CTFd refresh failed: {error}")
+            return
+        except ImportErrorBase as error:
             self.app.log_error(f"CTFd refresh failed: {error}")
             return
+        finally:
+            await loading_dialog.dismiss()
         self.app.push_screen(
             CTFdRefreshPreviewDialog(self.ctf.name, plan),
             lambda confirmed: self.apply_ctfd_refresh(plan, confirmed),
@@ -1402,6 +1464,7 @@ class CTFChallengeScreen(Screen[None]):
                 return
 
         self.challenges[:] = refreshed
+        self._invalidate_visible_challenge_indices()
         await self._refresh_challenge_list(selected_index)
         self.refresh_bindings()
         self.app.log_message(
@@ -1416,6 +1479,7 @@ class CTFChallengeScreen(Screen[None]):
         if challenge is None:
             return
         self.challenges.append(challenge)
+        self._invalidate_visible_challenge_indices()
         self.app.log_message(f"[{challenge.name}] Challenge added.")
         await self._refresh_challenge_list(len(self.challenges) - 1)
 
@@ -1434,7 +1498,9 @@ class CTFChallengeScreen(Screen[None]):
         data_store = self.app._data_store
         if data_store is not None and self.ctf.id and challenge.id:
             try:
-                notes = data_store.read_challenge_notes(self.ctf.id, challenge.id)
+                notes = data_store.read_challenge_notes_for_loaded_challenge(
+                    self.ctf.id, challenge.id
+                )
             except DataStoreError as error:
                 notes = f"Cannot load notes: {error}"
         details_text = Text(challenge.name, style=self.CHALLENGE_NAME_COLOR)
@@ -1467,6 +1533,23 @@ class CTFChallengeScreen(Screen[None]):
         else:
             details_text.append("  None")
         self.query_one("#challenge-details-content", Static).update(details_text)
+
+    def action_copy_challenge_details(self) -> None:
+        index = self._selected_challenge_index("copy details")
+        if index is None:
+            return
+        rendered_details = self.query_one(
+            "#challenge-details-content", Static
+        ).render()
+        details = (
+            rendered_details.plain
+            if isinstance(rendered_details, Text)
+            else str(rendered_details)
+        )
+        self.app.copy_to_clipboard(details)
+        self.app.log_message(
+            f"[{self.challenges[index].name}] Challenge details copied to clipboard."
+        )
 
     def _artifact_details(self, challenge: Challenge) -> list[str]:
         if not challenge.artifacts:
@@ -1553,6 +1636,7 @@ class CTFChallengeScreen(Screen[None]):
         if saved is None:
             return
         self.challenges[index] = saved
+        self._invalidate_visible_challenge_indices()
         await self._refresh_challenge_list(index)
         self.app.log_message(f"[{saved.name}] Challenge updated.")
 
@@ -1581,6 +1665,7 @@ class CTFChallengeScreen(Screen[None]):
                 self.app._storage_failure(error)
                 return
         del self.challenges[index]
+        self._invalidate_visible_challenge_indices()
         await self._refresh_challenge_list(index)
         if retained_directory is None:
             self.app.log_message(f"[{challenge.name}] Challenge removed.")
@@ -1599,6 +1684,7 @@ class CTFChallengeScreen(Screen[None]):
         ).has_focus
         if self.challenges:
             await panel.mount(self.make_challenge_list())
+            self._rendered_challenge_indices = visible_indices
             challenge_list = self.query_one("#challenge-list", ListView)
             list_index = self._list_index_for_challenge(selected_index)
             if list_index is None and visible_indices:
@@ -1615,6 +1701,7 @@ class CTFChallengeScreen(Screen[None]):
                     "No challenges match the filter."
                 )
         else:
+            self._rendered_challenge_indices = []
             await panel.mount(
                 Static(
                     "No challenges yet.\n\nPress A to add a challenge.",
@@ -1638,13 +1725,14 @@ class CTFChallengeScreen(Screen[None]):
             self._set_challenge_status,
         )
 
-    def _set_challenge_status(self, status: str | None) -> None:
+    async def _set_challenge_status(self, status: str | None) -> None:
         if status is None:
             return
         index = self._selected_challenge_index("update status")
         if index is None:
             return
         challenge = self.challenges[index]
+        visible_indices = self._visible_challenge_indices()
         status_label = status.replace("_", " ").title()
         if challenge.status == status:
             self.app.log_message(
@@ -1656,8 +1744,12 @@ class CTFChallengeScreen(Screen[None]):
         if saved is None:
             return
         self.challenges[index] = saved
-        self.update_challenge_list_item(index, saved)
-        self.render_challenge_details(index)
+        self._invalidate_visible_challenge_indices()
+        if self._visible_challenge_indices() != visible_indices:
+            await self._refresh_challenge_list(index)
+        else:
+            self.update_challenge_list_item(index, saved)
+            self.render_challenge_details(index)
         self.app.log_message(f"[{saved.name}]: Status changed to: {status_label}")
 
     def action_edit_flag(self) -> None:
@@ -1841,9 +1933,17 @@ class CTFChallengeScreen(Screen[None]):
         saved = self.app.persist_challenge(self.ctf, self.challenges, updated)
         if saved is None:
             return
+        visible_indices = self._visible_challenge_indices()
         self.challenges[index] = saved
-        self.update_challenge_list_item(index, saved)
-        self.render_challenge_details(index)
+        self._invalidate_visible_challenge_indices()
+        if (
+            saved.status != challenge.status
+            and self._visible_challenge_indices() != visible_indices
+        ):
+            await self._refresh_challenge_list(index)
+        else:
+            self.update_challenge_list_item(index, saved)
+            self.render_challenge_details(index)
         if verified:
             self.app.log_message(
                 f"[{challenge.name}] CTFd verified flag: {updated_flag}; "
@@ -1929,6 +2029,7 @@ class CTFChallengeScreen(Screen[None]):
                     selected_index = self._challenge_index_at(challenge_list.index)
             self._filter_active = False
             self._filter_query = ""
+            self._invalidate_visible_challenge_indices()
             query = self.query_one("#challenge-filter-query", Input)
             query.value = ""
             query.disabled = True

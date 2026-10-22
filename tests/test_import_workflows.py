@@ -7,12 +7,13 @@ import json
 import threading
 from pathlib import Path
 
-from textual.widgets import Button, Input, ListView, Static, TextArea
+from textual.widgets import Button, Input, ListView, ProgressBar, Static, TextArea
 
 from ctfwb import CTFWorkbenchApp, DataStore, generate_id
 from ctfwb.app import CTFChallengeScreen, ImportJSONDialog, RefreshSourceDialog
 from ctfwb.importers import CTFdError
 from ctfwb.storage import DataFileError, utc_timestamp
+from ctfwb.ui.dialogs import CTFdRefreshPreviewDialog, LoadingDialog
 
 
 def _seed_store(tmp_path, challenges=()):
@@ -286,7 +287,8 @@ def test_ctfd_refresh_previews_and_preserves_local_challenge_fields(
         store.save_ctfd_token(ctf_id, platform_url, "refresh-token")
         calls = []
 
-        def fetch(base_url, token):
+        def fetch(base_url, token, *, cancel_event):
+            assert not cancel_event.is_set()
             calls.append((base_url, token))
             return [
                 {
@@ -357,6 +359,112 @@ def test_ctfd_refresh_previews_and_preserves_local_challenge_fields(
             (platform_url, "refresh-token"),
             (platform_url, "refresh-token"),
         ]
+
+    asyncio.run(exercise())
+
+
+def test_ctfd_refresh_shows_progress_until_fetch_completes(tmp_path, monkeypatch):
+    async def exercise() -> None:
+        challenge = _challenge("Remote challenge", remote_id="41")
+        challenge["source"] = "ctfd"
+        store, ctf_id = _seed_store(tmp_path, [challenge])
+        platform_url = "https://ctfd.example"
+        store.save_ctfd_token(ctf_id, platform_url, "refresh-token")
+        fetch_started = threading.Event()
+        finish_fetch = threading.Event()
+
+        def fetch(_base_url, _token, *, cancel_event):
+            assert not cancel_event.is_set()
+            fetch_started.set()
+            if not finish_fetch.wait(timeout=5):
+                raise CTFdError("test fetch timed out")
+            return []
+
+        monkeypatch.setattr("ctfwb.ui.screens.challenges.fetch_ctfd_challenges", fetch)
+        app = CTFWorkbenchApp(data_store=store)
+        async with app.run_test() as pilot:
+            await _open_challenge_screen(app, pilot)
+            await pilot.press("r")
+            await pilot.pause()
+            assert fetch_started.wait(timeout=2)
+            assert isinstance(app.screen, LoadingDialog)
+            progress_bar = app.screen.query_one("#loading-progress", ProgressBar)
+            assert progress_bar.size.width > 40
+
+            finish_fetch.set()
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, CTFdRefreshPreviewDialog)
+            await pilot.click("#cancel-ctfd-refresh")
+
+    asyncio.run(exercise())
+
+
+def test_ctfd_refresh_cancel_button_signals_cancellation(tmp_path, monkeypatch):
+    async def exercise() -> None:
+        challenge = _challenge("Remote challenge", remote_id="41")
+        challenge["source"] = "ctfd"
+        store, ctf_id = _seed_store(tmp_path, [challenge])
+        store.save_ctfd_token(ctf_id, "https://ctfd.example", "refresh-token")
+        fetch_started = threading.Event()
+        finish_request = threading.Event()
+
+        def fetch(_base_url, _token, *, cancel_event):
+            fetch_started.set()
+            assert cancel_event.wait(timeout=5)
+            assert finish_request.wait(timeout=5)
+            raise CTFdError("CTFd request cancelled")
+
+        monkeypatch.setattr("ctfwb.ui.screens.challenges.fetch_ctfd_challenges", fetch)
+        app = CTFWorkbenchApp(data_store=store)
+        async with app.run_test() as pilot:
+            await _open_challenge_screen(app, pilot)
+            await pilot.press("r")
+            await pilot.pause()
+            assert fetch_started.wait(timeout=2)
+            assert isinstance(app.screen, LoadingDialog)
+
+            await pilot.click("#cancel-loading")
+            await pilot.pause()
+            assert isinstance(app.screen, LoadingDialog)
+            assert "Cancellation requested" in str(
+                app.screen.query_one("#loading-message", Static).render()
+            )
+            finish_request.set()
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, CTFChallengeScreen)
+            assert "CTFd refresh cancelled; no challenges changed." in str(
+                app.query_one("#log-message", Static).render()
+            )
+
+    asyncio.run(exercise())
+
+
+def test_ctfd_refresh_dismisses_progress_dialog_on_fetch_error(tmp_path, monkeypatch):
+    async def exercise() -> None:
+        challenge = _challenge("Remote challenge", remote_id="41")
+        challenge["source"] = "ctfd"
+        store, ctf_id = _seed_store(tmp_path, [challenge])
+        store.save_ctfd_token(ctf_id, "https://ctfd.example", "refresh-token")
+
+        def fail_fetch(_base_url, _token, *, cancel_event):
+            assert not cancel_event.is_set()
+            raise CTFdError("service unavailable")
+
+        monkeypatch.setattr(
+            "ctfwb.ui.screens.challenges.fetch_ctfd_challenges", fail_fetch
+        )
+        app = CTFWorkbenchApp(data_store=store)
+        async with app.run_test() as pilot:
+            await _open_challenge_screen(app, pilot)
+            await pilot.press("r")
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, CTFChallengeScreen)
+            assert "CTFd refresh failed: service unavailable" in str(
+                app.query_one("#log-message", Static).render()
+            )
 
     asyncio.run(exercise())
 

@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator, Mapping
+from threading import Event
 from typing import Any
 
 from ctfwb.importers.json_import import (
@@ -19,6 +20,11 @@ from ctfwb.importers.json_import import (
     validate_challenge_json,
 )
 from ctfwb.logging_setup import APP_LOGGER, log_debug_exception
+
+
+def _raise_if_cancelled(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise CTFdError("CTFd request cancelled")
 
 
 def _response_page(document: object) -> tuple[list[dict[str, Any]], int | None]:
@@ -261,6 +267,7 @@ def _fetch_ctfd_challenges_at_base_url(
     *,
     timeout: float = 10.0,
     opener: Any | None = None,
+    cancel_event: Event | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch CTFd v1 challenge pages and per-challenge details over HTTPS.
 
@@ -275,6 +282,7 @@ def _fetch_ctfd_challenges_at_base_url(
     other HTTP/API errors, network failures, timeouts, and malformed replies.
     Exception text intentionally excludes the token and request headers.
     """
+    _raise_if_cancelled(cancel_event)
     parsed, origin, base_path, request_opener = _request_context(
         base_url, token, timeout, opener
     )
@@ -287,6 +295,7 @@ def _fetch_ctfd_challenges_at_base_url(
     visited: set[int] = set()
 
     while known_pages is None or page <= known_pages:
+        _raise_if_cancelled(cancel_event)
         if page in visited:
             raise CTFdError("CTFd pagination repeated a page")
         visited.add(page)
@@ -294,6 +303,7 @@ def _fetch_ctfd_challenges_at_base_url(
         document = _request_json(
             request_opener, url, origin, token, timeout, resource="page"
         )
+        _raise_if_cancelled(cancel_event)
         records, reported_pages = _response_page(document)
         raw_records.extend(records)
         if reported_pages is not None:
@@ -311,6 +321,7 @@ def _fetch_ctfd_challenges_at_base_url(
 
     detailed_records: list[dict[str, Any]] = []
     for summary, raw_summary in zip(summaries, raw_records, strict=True):
+        _raise_if_cancelled(cancel_event)
         remote_id = summary["remote_id"]
         if remote_id is None:
             raise CTFdError("CTFd challenge list omitted a stable challenge ID")
@@ -324,6 +335,7 @@ def _fetch_ctfd_challenges_at_base_url(
             timeout,
             resource="challenge",
         )
+        _raise_if_cancelled(cancel_event)
         detailed_records.append(
             _response_challenge_detail(document, raw_summary, remote_id)
         )
@@ -587,6 +599,7 @@ def fetch_ctfd_challenges(
     *,
     timeout: float = 10.0,
     opener: Any | None = None,
+    cancel_event: Event | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch CTFd challenges, retrying at the host root if a path fails.
 
@@ -594,11 +607,18 @@ def fetch_ctfd_challenges(
     the URL includes a path, retry against the HTTPS host root. Redirects
     remain disabled and both attempts target the same host.
     """
+    _raise_if_cancelled(cancel_event)
     try:
         return _fetch_ctfd_challenges_at_base_url(
-            base_url, token, timeout=timeout, opener=opener
+            base_url,
+            token,
+            timeout=timeout,
+            opener=opener,
+            cancel_event=cancel_event,
         )
     except CTFdError as first_error:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CTFdError("CTFd request cancelled") from None
         if not isinstance(base_url, str):
             raise first_error from None
         try:
@@ -613,5 +633,9 @@ def fetch_ctfd_challenges(
         )
         host_root = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
         return _fetch_ctfd_challenges_at_base_url(
-            host_root, token, timeout=timeout, opener=opener
+            host_root,
+            token,
+            timeout=timeout,
+            opener=opener,
+            cancel_event=cancel_event,
         )

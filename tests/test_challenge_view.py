@@ -250,8 +250,8 @@ def test_challenge_filter_matches_name_and_category_case_insensitively() -> None
     async def exercise() -> None:
         app = CTFWorkbenchApp([CTF("Spring CTF")])
         app._challenges[0] = [
-            Challenge("Root Me", category="WeB"),
-            Challenge("Web Riddle", category="misc"),
+            Challenge("Root Me", category="WeB", status="solved"),
+            Challenge("Web Riddle", category="misc", status="in_progress"),
             Challenge("Crypto", category="crypto"),
         ]
         async with app.run_test() as pilot:
@@ -279,6 +279,13 @@ def test_challenge_filter_matches_name_and_category_case_insensitively() -> None
             assert "Root Me" in str(
                 screen.query_one("#challenge-details-content", Static).render()
             )
+            filtered_list = challenge_list
+            query.value = "wE"
+            await pilot.pause()
+            assert screen.query_one("#challenge-list", ListView) is filtered_list
+
+            query.value = "wEb"
+            await pilot.pause()
             await pilot.press("enter")
             assert challenge_list.has_focus
             await pilot.press("down")
@@ -286,6 +293,24 @@ def test_challenge_filter_matches_name_and_category_case_insensitively() -> None
                 screen.query_one("#challenge-details-content", Static).render()
             )
             assert len(screen.challenges) == 3
+
+            query.value = "sOlVeD"
+            await pilot.pause()
+            assert len(screen.query_one("#challenge-list", ListView).children) == 1
+            assert "Root Me" in str(
+                screen.query_one("#challenge-details-content", Static).render()
+            )
+
+            query.value = "in progress"
+            await pilot.pause()
+            assert len(screen.query_one("#challenge-list", ListView).children) == 1
+            assert "Web Riddle" in str(
+                screen.query_one("#challenge-details-content", Static).render()
+            )
+
+            query.value = "wEb"
+            await pilot.pause()
+            assert len(screen.query_one("#challenge-list", ListView).children) == 2
 
             query.value = "missing"
             await pilot.pause()

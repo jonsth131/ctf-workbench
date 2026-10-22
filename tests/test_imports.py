@@ -6,6 +6,7 @@ import io
 import json
 import urllib.error
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -720,6 +721,38 @@ def test_rejects_invalid_pagination_and_nonfinite_timeout():
         fetch_ctfd_challenges("https://ctf.example", "token", opener=opener)
     with pytest.raises(CTFdError, match="finite"):
         fetch_ctfd_challenges("https://ctf.example", "token", timeout=float("inf"))
+
+
+def test_ctfd_fetch_stops_after_cancellation_between_pages():
+    cancel_event = Event()
+
+    class CancelAfterPageOpener(FakeOpener):
+        def open(self, request, timeout):
+            response = super().open(request, timeout)
+            cancel_event.set()
+            return response
+
+    opener = CancelAfterPageOpener(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "data": [],
+                    "meta": {"pagination": {"page": 1, "pages": 2}},
+                }
+            )
+        ]
+    )
+
+    with pytest.raises(CTFdError, match="cancelled"):
+        fetch_ctfd_challenges(
+            "https://ctf.example",
+            "token",
+            opener=opener,
+            cancel_event=cancel_event,
+        )
+
+    assert len(opener.requests) == 1
 
 
 def test_submit_ctfd_flag_posts_to_configured_https_origin():

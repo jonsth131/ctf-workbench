@@ -21,6 +21,7 @@ from ctfwb.ui.dialogs.imports import (
     ImportSourceDialog,
     RefreshSourceDialog,
 )
+from ctfwb.ui.dialogs.loading import LoadingDialog
 from ctfwb.ui.dialogs.solvers import (
     ConfirmOverwriteSolverDialog,
     SelectSolverTemplateDialog,
@@ -48,5 +49,6 @@ __all__ = [
     "SelectChallengeStatusDialog",
     "EditFlagDialog",
     "OpenArtifactsDirectoryDialog",
+    "LoadingDialog",
     "fetch_ctfd_challenges",
 ]

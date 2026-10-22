@@ -114,6 +114,31 @@ def test_read_notes_returns_content_without_creating_a_missing_file(tmp_path):
     )
 
 
+def test_read_notes_for_loaded_challenge_skips_collection_reload(
+    tmp_path, monkeypatch
+):
+    store, ctf, challenge = _store_with_challenge(tmp_path)
+    notes_path = (
+        store.data_dir
+        / "ctfs"
+        / ctf["id"]
+        / "challenges"
+        / challenge["id"]
+        / "notes.md"
+    )
+    notes_path.parent.mkdir(parents=True)
+    notes_path.write_text("# Existing notes\n", encoding="utf-8")
+
+    def unexpected_reload(_ctf_id):
+        pytest.fail("loaded challenge notes should not reload the collection")
+
+    monkeypatch.setattr(store, "load_challenges", unexpected_reload)
+
+    assert store.read_challenge_notes_for_loaded_challenge(
+        ctf["id"], challenge["id"]
+    ) == "# Existing notes\n"
+
+
 def test_read_notes_refuses_symlinked_notes_file(tmp_path):
     store, ctf, challenge = _store_with_challenge(tmp_path)
     challenge_directory = (
@@ -253,6 +278,8 @@ def test_note_binding_opens_selected_challenge_notes_with_configured_editor(
 ):
     async def exercise():
         store, ctf_record, challenge_record = _store_with_challenge(tmp_path)
+        challenge_record["description"] = "Inspect the page."
+        store.save_challenges(ctf_record["id"], [challenge_record])
         app = CTFWorkbenchApp(
             data_store=store,
             editor="editor with spaces",
@@ -300,6 +327,12 @@ def test_note_binding_opens_selected_challenge_notes_with_configured_editor(
                 for span in rendered_details.spans
             )
             assert "[Web Warmup] Note edited." in str(
+                app.query_one("#log-message", Static).render()
+            )
+            await pilot.press("y")
+            assert "Inspect the page." in app._clipboard
+            assert "# Solving notes" in app._clipboard
+            assert "[Web Warmup] Challenge details copied to clipboard." in str(
                 app.query_one("#log-message", Static).render()
             )
 

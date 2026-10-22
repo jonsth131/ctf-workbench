@@ -81,9 +81,11 @@ return to the CTF list. Press `Tab` to switch between the
 challenge list and details; use the arrow keys or `j`/`k` to scroll the focused
 pane, and `Ctrl-D`/`Ctrl-U` to page down/up. Notes from the selected challenge's
 `notes.md` are shown in the details pane. Press `n` to edit that note in the
-configured editor (default `nvim`). CTF and challenge changes remain in the
-data directory across application restarts. The command bar grows to multiple
-rows on narrow terminals and returns to one row when there is enough width.
+configured editor (default `nvim`). Press `y` to copy the selected challenge's
+full details, including its description and notes, to the terminal clipboard.
+CTF and challenge changes remain in the data directory across application
+restarts. The command bar grows to multiple rows on narrow terminals and
+returns to one row when there is enough width.
 Press `o` to open the selected challenge's artifacts directory in a separate
 terminal (the default) or file explorer while Workbench stays running; press
 `Esc` to cancel.
